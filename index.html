@@ -62,7 +62,7 @@
 
             <!-- Tempo total -->
             <div>
-                <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">Tempo total da sessão</label>
+                <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">Tempo total disponível</label>
                 <div class="flex items-center gap-2">
                     <div class="flex-1 relative">
                         <input id="cfg-hours" type="number" min="0" max="16" class="field pr-8" oninput="onFormChange()">
@@ -80,33 +80,24 @@
                     <button type="button" class="chip" data-total="360" onclick="setTotal(360)">6h</button>
                     <button type="button" class="chip" data-total="480" onclick="setTotal(480)">8h</button>
                 </div>
-                <p class="text-[10px] text-slate-500 mt-1.5">Inclui estudo e pausas.</p>
+                <p class="text-[10px] text-slate-500 mt-1.5">Do início ao fim, incluindo as pausas.</p>
             </div>
 
-            <!-- Foco -->
+            <!-- Tempo líquido -->
             <div>
-                <label for="cfg-focus" class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">Tempo de foco por bloco</label>
-                <div class="relative">
-                    <input id="cfg-focus" type="number" min="5" max="180" class="field pr-10" oninput="onFormChange()">
-                    <span class="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-500">min</span>
+                <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">Tempo líquido de estudo</label>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 relative">
+                        <input id="cfg-net-hours" type="number" min="0" max="16" class="field pr-8" oninput="onFormChange()">
+                        <span class="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-500">h</span>
+                    </div>
+                    <div class="flex-1 relative">
+                        <input id="cfg-net-mins" type="number" min="0" max="59" class="field pr-10" oninput="onFormChange()">
+                        <span class="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-500">min</span>
+                    </div>
                 </div>
-                <div class="flex flex-wrap gap-1.5 mt-2" id="focus-chips">
-                    <button type="button" class="chip" data-focus="25" onclick="setFocus(25)">25</button>
-                    <button type="button" class="chip" data-focus="45" onclick="setFocus(45)">45</button>
-                    <button type="button" class="chip" data-focus="50" onclick="setFocus(50)">50</button>
-                    <button type="button" class="chip" data-focus="60" onclick="setFocus(60)">60</button>
-                    <button type="button" class="chip" data-focus="90" onclick="setFocus(90)">90</button>
-                </div>
+                <p class="text-[10px] text-slate-500 mt-1.5">Só o tempo de estudo. O que sobrar do tempo total vira descanso, distribuído entre os blocos.</p>
             </div>
-
-            <!-- Revisão final -->
-            <label class="flex items-start gap-2.5 cursor-pointer">
-                <input id="cfg-review" type="checkbox" class="mt-0.5 w-4 h-4 accent-indigo-500" onchange="onFormChange()">
-                <span class="text-xs text-slate-300">
-                    Reservar 10 min finais para revisão
-                    <span class="block text-[10px] text-slate-500">Só é aplicado em sessões de 1h ou mais.</span>
-                </span>
-            </label>
 
             <!-- Prévia -->
             <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3.5 space-y-2">
@@ -279,7 +270,7 @@
                         </li>
                         <li class="flex items-start gap-2">
                             <i data-lucide="coffee" class="w-4 h-4 text-amber-400 shrink-0 mt-0.5"></i>
-                            <span><strong>Pausa Longa:</strong> Momento ideal para um lanche leve e descompressão. Evite refeições pesadas.</span>
+                            <span><strong>Pausa Principal:</strong> Momento ideal para um lanche leve e descompressão. Evite refeições pesadas.</span>
                         </li>
                         <li class="flex items-start gap-2">
                             <i data-lucide="zap" class="w-4 h-4 text-emerald-400 shrink-0 mt-0.5"></i>
@@ -319,11 +310,11 @@
         }
 
         // ---------- Config ----------
-        const DEFAULT_CFG = { name: 'Matemática Básica I', start: '13:30', total: 450, focus: 60, review: true };
+        const DEFAULT_CFG = { name: 'Sprint Matemática Básica I', start: '13:30', total: 450, net: 348 };
 
         function loadCfg() {
             try {
-                const saved = JSON.parse(lsGet('sprint_cfg') || 'null');
+                const saved = JSON.parse(lsGet('sprint_cfg_v2') || 'null');
                 if (saved && typeof saved === 'object') return { ...DEFAULT_CFG, ...saved };
             } catch (e) {}
             return { ...DEFAULT_CFG };
@@ -338,67 +329,94 @@
             'Olhe para longe e relaxe a vista.',
             'Lave o rosto e respire fundo.'
         ];
+        const IDEAL_BLOCK = 60;  // duração ideal de um bloco de estudo (min)
+        const IDEAL_BREAK = 15;  // duração ideal de uma pausa (min)
+
+        // Divide "total" em "count" partes que somam exatamente "total", em múltiplos
+        // de "step". As sobras vão para os índices de "order" (primeiro o order[0]).
+        function distribute(total, count, order, step) {
+            const arr = new Array(count).fill(Math.floor(total / count / step) * step);
+            let left = total - arr[0] * count;
+            let k = 0;
+            while (left >= step) { arr[order[k % count]] += step; left -= step; k++; }
+            if (left > 0) arr[order[0]] += left;
+            return arr;
+        }
+
+        // Ordem do centro para as pontas (a pausa mais longa fica no meio da sessão)
+        function middleOut(count) {
+            const mid = Math.floor((count - 1) / 2);
+            const order = [mid];
+            for (let d = 1; order.length < count; d++) {
+                if (mid + d < count) order.push(mid + d);
+                if (mid - d >= 0 && order.length < count) order.push(mid - d);
+            }
+            return order;
+        }
 
         function buildPlan(c) {
-            const T = c.total, F = c.focus;
-            const review = c.review && T >= 60 ? 10 : 0;
-            const avail = T - review;
+            const N = c.net;                       // estudo líquido
+            const B = Math.max(c.total - c.net, 0); // tempo disponível para descanso
 
-            const shortBreak = clamp(round5(F * 0.25), 5, 20);
-            const longBreak = clamp(shortBreak * 2, 10, 30);
-            const cycle = F <= 30 ? 4 : 3;
-
-            const breaksFor = (n) => {
-                const arr = [];
-                for (let i = 1; i < n; i++) arr.push(i % cycle === 0 ? longBreak : shortBreak);
-                return arr;
-            };
-
-            // escolhe a quantidade de blocos cujo tamanho fica mais próximo do foco desejado
-            let bestN = 1, bestDiff = Infinity;
-            for (let n = 1; n <= 60; n++) {
-                const b = breaksFor(n).reduce((a, x) => a + x, 0);
-                const len = (avail - b) / n;
-                if (len < 5) break;
-                const diff = Math.abs(len - F);
-                if (diff < bestDiff) { bestDiff = diff; bestN = n; }
+            // Escolhe a quantidade de blocos que deixa blocos e pausas
+            // o mais perto possível dos valores ideais.
+            let bestN = 1, bestCost = Infinity;
+            if (B > 0) {
+                const maxN = Math.max(2, Math.min(60, Math.floor(B / 5) + 1));
+                for (let n = 2; n <= maxN; n++) {
+                    const blockLen = N / n;
+                    const avgBreak = B / (n - 1);
+                    if (blockLen < 10) break;
+                    // Blocos curtos demais custam caro; blocos longos demais também.
+                    const blockCost = blockLen < IDEAL_BLOCK
+                        ? 2 * Math.pow((IDEAL_BLOCK - blockLen) / IDEAL_BLOCK, 2)
+                        : 1.5 * Math.pow((blockLen - IDEAL_BLOCK) / IDEAL_BLOCK, 2);
+                    // Pausas curtas demais custam caro; pausas mais longas que o ideal custam pouco.
+                    const breakCost = avgBreak < IDEAL_BREAK
+                        ? Math.pow((IDEAL_BREAK - avgBreak) / IDEAL_BREAK, 2)
+                        : Math.pow((avgBreak - IDEAL_BREAK) / (IDEAL_BREAK * 3), 2);
+                    const cost = blockCost + breakCost;
+                    if (cost < bestCost) { bestCost = cost; bestN = n; }
+                }
             }
 
-            const breaks = breaksFor(bestN);
-            const breakSum = breaks.reduce((a, x) => a + x, 0);
-            const studyTotal = Math.max(avail - breakSum, 1);
-            const base = Math.floor(studyTotal / bestN);
-            const rest = studyTotal - base * bestN;
+            const blocks = distribute(N, bestN, Array.from({ length: bestN }, (_, i) => i), 1);
+            const breaks = bestN > 1 ? distribute(B, bestN - 1, middleOut(bestN - 1), 5) : [];
+
+            // A pausa mais longa (no meio) vira a "Pausa Principal" só se for 10+ min maior que a menor
+            const maxBreak = breaks.length ? Math.max(...breaks) : 0;
+            const minBreak = breaks.length ? Math.min(...breaks) : 0;
+            const mainIdx = (maxBreak - minBreak >= 10 && maxBreak >= 20) ? breaks.indexOf(maxBreak) : -1;
 
             const items = [];
             let cursor = parseClock(c.start);
             let id = 1, shortCount = 0;
 
-            const push = (type, title, dur, desc, extra = {}) => {
+            const push = (type, title, dur, desc) => {
                 items.push({
                     id: id++, type, title, durationMin: dur, desc,
-                    startMin: cursor, time: `${fmtClock(cursor)} - ${fmtClock(cursor + dur)}`, ...extra
+                    startMin: cursor, time: `${fmtClock(cursor)} - ${fmtClock(cursor + dur)}`
                 });
                 cursor += dur;
             };
 
             for (let i = 0; i < bestN; i++) {
-                const len = base + (i < rest ? 1 : 0);
-                push('study', `Bloco ${i + 1}: Estudo Focado`, len, `Foco total por ${len} min, sem distrações.`);
+                push('study', `Bloco ${i + 1}: Estudo Focado`, blocks[i], `Foco total por ${blocks[i]} min, sem distrações.`);
                 if (i < bestN - 1) {
                     const d = breaks[i];
-                    if (d === longBreak && longBreak !== shortBreak) {
-                        push('break', 'Pausa Longa: Lanche', d, 'Refeição leve sem telas e descanso total.', { long: true });
+                    if (i === mainIdx) {
+                        push('break', 'Pausa Principal: Lanche', d, 'Refeição leve sem telas e descanso total.');
                     } else {
                         push('break', `Pausa ${++shortCount}`, d, SHORT_TIPS[(shortCount - 1) % SHORT_TIPS.length]);
                     }
                 }
             }
-            if (review) push('review', 'Fechamento & Revisão', review, 'Organizar anotações e concluir sessão.');
 
-            const studyMin = items.filter(i => i.type === 'study').reduce((a, i) => a + i.durationMin, 0);
-            const breakMin = items.filter(i => i.type !== 'study').reduce((a, i) => a + i.durationMin, 0);
-            return { items, studyMin, breakMin, blocks: bestN, endMin: cursor, blockLens: [base, base + (rest ? 1 : 0)] };
+            const breakMin = breaks.reduce((a, x) => a + x, 0);
+            return {
+                items, studyMin: N, breakMin, blocks: bestN, breaks,
+                endMin: cursor, blockLens: [Math.min(...blocks), Math.max(...blocks)]
+            };
         }
 
         // ---------- State ----------
@@ -447,45 +465,37 @@
             $('cfg-start').value = c.start;
             $('cfg-hours').value = Math.floor(c.total / 60);
             $('cfg-mins').value = c.total % 60;
-            $('cfg-focus').value = c.focus;
-            $('cfg-review').checked = !!c.review;
+            $('cfg-net-hours').value = Math.floor(c.net / 60);
+            $('cfg-net-mins').value = c.net % 60;
             syncChips();
         }
 
         function readForm() {
-            const h = parseInt($('cfg-hours').value, 10) || 0;
-            const m = parseInt($('cfg-mins').value, 10) || 0;
+            const num = (id) => parseInt($(id).value, 10) || 0;
             return {
                 name: $('cfg-name').value.trim() || 'Sessão de Estudos',
                 start: $('cfg-start').value || '13:30',
-                total: h * 60 + m,
-                focus: parseInt($('cfg-focus').value, 10) || 0,
-                review: $('cfg-review').checked
+                total: num('cfg-hours') * 60 + num('cfg-mins'),
+                net: num('cfg-net-hours') * 60 + num('cfg-net-mins')
             };
         }
 
         function validate(c) {
-            if (c.total < 10) return 'O tempo total precisa ser de pelo menos 10 minutos.';
+            if (c.total < 15) return 'O tempo total precisa ser de pelo menos 15 minutos.';
             if (c.total > 960) return 'O tempo total máximo é 16 horas.';
-            if (c.focus < 5) return 'O tempo de foco precisa ser de pelo menos 5 minutos.';
-            if (c.focus > 180) return 'O tempo de foco máximo é 180 minutos.';
+            if (c.net < 5) return 'O tempo líquido de estudo precisa ser de pelo menos 5 minutos.';
+            if (c.net > c.total) return 'O tempo líquido de estudo não pode ser maior que o tempo total.';
             return null;
         }
 
         function syncChips() {
             const total = (parseInt($('cfg-hours').value, 10) || 0) * 60 + (parseInt($('cfg-mins').value, 10) || 0);
-            const focus = parseInt($('cfg-focus').value, 10) || 0;
             document.querySelectorAll('#total-chips .chip').forEach(b => b.classList.toggle('active', +b.dataset.total === total));
-            document.querySelectorAll('#focus-chips .chip').forEach(b => b.classList.toggle('active', +b.dataset.focus === focus));
         }
 
         function setTotal(min) {
             $('cfg-hours').value = Math.floor(min / 60);
             $('cfg-mins').value = min % 60;
-            onFormChange();
-        }
-        function setFocus(min) {
-            $('cfg-focus').value = min;
             onFormChange();
         }
 
@@ -500,8 +510,12 @@
                 ['pv-blocks', 'pv-blocklen', 'pv-breaks', 'pv-study', 'pv-end'].forEach(i => $(i).textContent = '-');
                 return;
             }
-            if (c.focus > c.total) {
-                warn.textContent = 'O foco é maior que o tempo total: será criado um único bloco.';
+            const rest = c.total - c.net;
+            if (rest === 0) {
+                warn.textContent = 'Sem tempo para pausas: será criado um único bloco.';
+                warn.classList.remove('hidden');
+            } else if (rest < 5) {
+                warn.textContent = 'Pouco tempo para descanso (menos de 5 min).';
                 warn.classList.remove('hidden');
             } else {
                 warn.classList.add('hidden');
@@ -509,8 +523,8 @@
             const p = buildPlan(c);
             const [a, b] = p.blockLens;
             $('pv-blocks').textContent = p.blocks;
-            $('pv-blocklen').textContent = a === b || !b ? `${a} min` : `${a}–${b} min`;
-            $('pv-breaks').textContent = fmtDur(p.breakMin);
+            $('pv-blocklen').textContent = a === b ? `${a} min` : `${a}–${b} min`;
+            $('pv-breaks').textContent = p.breaks.length ? `${p.breaks.length} · ${fmtDur(p.breakMin)}` : 'nenhuma';
             $('pv-study').textContent = fmtDur(p.studyMin);
             $('pv-end').textContent = fmtClock(p.endMin);
         }
@@ -521,7 +535,7 @@
             if (err) { onFormChange(); return; }
             const changed = JSON.stringify(c) !== sig();
             cfg = c;
-            lsSet('sprint_cfg', JSON.stringify(cfg));
+            lsSet('sprint_cfg_v2', JSON.stringify(cfg));
             if (changed) {
                 plan = buildPlan(cfg);
                 completedBlocks = new Set();
@@ -542,12 +556,12 @@
 
         // ---------- Header ----------
         function updateHeader() {
-            $('header-title').textContent = `Sprint ${cfg.name}`;
+            $('header-title').textContent = cfg.name;
             $('header-sub').textContent = `${fmtClock(parseClock(cfg.start))} às ${fmtClock(plan.endMin)} • ${plan.blocks} blocos de foco`;
             $('header-total').textContent = fmtDur(cfg.total);
             $('header-break').textContent = fmtDur(plan.breakMin);
-            $('footer-name').textContent = `Sprint ${cfg.name}`;
-            document.title = `Sprint ${cfg.name} - Dashboard de Estudos`;
+            $('footer-name').textContent = cfg.name;
+            document.title = `${cfg.name} - Dashboard de Estudos`;
         }
 
         // ---------- Checklist ----------
